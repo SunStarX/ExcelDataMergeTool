@@ -6,13 +6,30 @@
   <component name="ChangeListManager">
     <list default="true" id="72177092-8523-4f72-b34e-ce20df549ce5" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/excel_merger/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/excel_merger/config.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/excel_merger/excel_processor.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/excel_merger/format_handler.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/excel_merger/main.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/excel_merger/utils.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main - 副本/run.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/Analysis-00.toc" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/EXE-00.toc" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/PKG-00.toc" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/PYZ-00.pyz" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/PYZ-00.toc" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/base_library.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/run.pkg" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/warn-run.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/build/run/xref-run.html" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/dist/run.exe" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/main/excel_merger/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/excel_merger/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main/excel_merger/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/excel_merger/config.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main/excel_merger/excel_processor.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/main/excel_merger/format_handler.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/excel_merger/format_handler.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main/excel_merger/main.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/excel_merger/gui_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/excel_merger/gui_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/excel_merger/processor.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/excel_merger/processor.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main/excel_merger/utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/excel_merger/utils.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main/run.py" beforeDir="false" afterPath="$PROJECT_DIR$/main/run.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main/run.spec" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

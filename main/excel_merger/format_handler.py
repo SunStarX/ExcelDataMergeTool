@@ -1,9 +1,9 @@
-"""单元格格式处理工具 - 避免StyleProxy哈希操作"""
+"""单元格格式处理工具 - 避免StyleProxy哈希错误"""
 from openpyxl.styles import Font, Alignment, Border, PatternFill
 
 class FormatHandler:
     """Excel单元格格式处理类 - 修复StyleProxy哈希错误"""
-
+    
     @staticmethod
     def copy_cell_format(source_cell, target_cell, force_right=False):
         """
@@ -12,7 +12,7 @@ class FormatHandler:
         """
         if not source_cell or not target_cell:
             return
-
+            
         # 复制字体格式 - 提取具体属性而非使用整个StyleProxy
         target_cell.font = Font(
             name=source_cell.font.name,
@@ -24,7 +24,7 @@ class FormatHandler:
             strike=source_cell.font.strike,
             color=source_cell.font.color
         )
-
+        
         # 复制对齐方式
         horizontal = "right" if force_right else source_cell.alignment.horizontal
         target_cell.alignment = Alignment(
@@ -35,7 +35,7 @@ class FormatHandler:
             shrink_to_fit=source_cell.alignment.shrink_to_fit,
             indent=source_cell.alignment.indent
         )
-
+        
         # 复制边框
         target_cell.border = Border(
             left=source_cell.border.left,
@@ -48,13 +48,13 @@ class FormatHandler:
             vertical=source_cell.border.vertical,
             horizontal=source_cell.border.horizontal
         )
-
+        
         # 复制填充颜色
         target_cell.fill = PatternFill(
             patternType=source_cell.fill.patternType,
             fgColor=source_cell.fill.fgColor,
             bgColor=source_cell.fill.bgColor
         )
-
+        
         # 复制数字格式
         target_cell.number_format = source_cell.number_format
