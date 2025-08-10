@@ -1,10 +1,23 @@
-"""配置常量定义"""
-
+"""配置常量定义 - 增加最大列数限制"""
 class Config:
-    """配置常量定义"""
-    EXCEL_EXTENSIONS = ('.xlsx', '.xls')
+    """应用程序配置常量"""
+    # Excel文件扩展名
+    EXCEL_EXTENSIONS = ('.xlsx', '.xlsm')
+
+    # 临时文件前缀（会被忽略）
     TEMP_FILE_PREFIX = '~$'
-    AMOUNT_KEYWORDS = ["金额", "结算", "价格", "费用", "总价", "合计", "付款", "收款"]
-    EMPTY_COLUMN_THRESHOLD = 5  # 连续空列判断表头结束的阈值
-    LONG_NUMBER_THRESHOLD = 11  # 长数字判断阈值
-    DEFAULT_OUTPUT_DIR = "."  # 默认输出目录
+
+    # 判断表头结束的连续空列阈值
+    EMPTY_COLUMN_THRESHOLD = 3
+
+    # 长数字阈值（超过此长度将使用文本格式）
+    LONG_NUMBER_THRESHOLD = 10
+
+    # 金额列关键词（用于识别金额相关列）
+    AMOUNT_KEYWORDS = {'金额', '钱', '款', '费用', '总计', '合计', 'sum', 'amount'}
+
+    # 最大检查列数（防止无限循环）
+    MAX_COLUMNS_TO_CHECK = 100  # 合理的列数限制
+
+    # 写入批处理大小（提高大文件处理效率）
+    WRITE_BATCH_SIZE = 100
