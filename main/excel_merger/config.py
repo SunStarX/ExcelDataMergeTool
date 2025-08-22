@@ -2,7 +2,7 @@
 class Config:
     """应用程序配置常量"""
     # Excel文件扩展名
-    EXCEL_EXTENSIONS = ('.xlsx', '.xlsm')
+    EXCEL_EXTENSIONS = ('.xlsx', '.xlsm', '.xls')
     
     # 临时文件前缀（会被忽略）
     TEMP_FILE_PREFIX = '~$'

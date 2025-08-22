@@ -1,62 +1,134 @@
-"""Excel处理核心逻辑 - 按目录原生顺序合并文件"""
+"""Excel处理核心逻辑 - 按目录原生顺序合并文件，支持xls自动转换为xlsx"""
 import os
+import xlrd
 import pandas as pd
 from datetime import datetime
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 from .config import Config
 from .utils import Utils
 from .format_handler import FormatHandler
 
 class ExcelProcessor:
-    """Excel文件处理核心类 - 按目录原生顺序合并文件"""
+    """Excel文件处理核心类 - 按目录原生顺序合并文件，支持xls自动转换"""
     def __init__(self, folder_path, output_path, log_callback):
         self.folder_path = folder_path
         self.output_path = output_path
         self.log = log_callback  # 日志回调函数
         self.excel_files = []
+        self.converted_files = []  # 存储转换后的文件路径
         self.header_info = []  # (列索引, 原始表头, 标准化表头, 是否金额列)
         self.header_map = {}
         self.wb = None
         self.ws = None
         self.has_shop_column = False  # 是否已添加店铺列
-        
+
         # 初始化时过滤警告
         Utils.filter_warnings()
 
     def merge(self):
-        """执行合并操作 - 按目录原生顺序合并文件"""
+        """执行合并操作 - 转换xls文件 -> 按目录原生顺序合并文件"""
         # 获取Excel文件（按目录原生顺序）
         self._get_excel_files_in_native_order()
-        
+
+        # 转换所有xls文件为xlsx
+        self._convert_all_xls_to_xlsx()
+
         # 分析第一个文件获取表头信息
-        first_file = self.excel_files[0]
+        first_file = self.converted_files[0]
         first_row_count, start_row, format_ref_row = self._analyze_first_file(first_file)
-        
+
         # 添加店铺列到第一个文件
         self._add_shop_column_to_first_file(first_file, first_row_count)
-        
+
         # 按原生顺序处理所有文件
         merged_df = self._process_all_files_in_native_order()
-        
+
         # 写入合并数据
         self._write_merged_data(merged_df, first_row_count, start_row, format_ref_row)
-        
+
         # 保存结果
-        return self._save_result()
+        result = self._save_result()
+
+        # 清理临时转换文件
+        self._cleanup_converted_files()
+
+        return result
+
+    def _convert_all_xls_to_xlsx(self):
+        """将所有xls文件转换为xlsx格式"""
+        self.log("开始检查并转换xls文件...")
+        self.converted_files = []
+
+        for file in self.excel_files:
+            file_path = os.path.join(self.folder_path, file)
+
+            if file.endswith('.xls') and not file.endswith('.xlsx'):
+                # 需要转换的xls文件
+                converted_path = self._convert_xls_to_xlsx(file_path)
+                self.converted_files.append(converted_path)
+            else:
+                # 已经是xlsx文件，直接使用
+                self.converted_files.append(file_path)
+
+        self.log(f"格式转换完成，共处理{len(self.converted_files)}个文件")
+
+    def _convert_xls_to_xlsx(self, xls_file_path):
+        """将单个xls文件转换为xlsx格式"""
+        try:
+            # 构建输出文件路径
+            file_name = os.path.basename(xls_file_path)
+            file_name_without_ext = os.path.splitext(file_name)[0]
+            # 在原文件夹创建转换后的临时文件
+            xlsx_file_path = os.path.join(
+                self.folder_path,
+                f"{file_name_without_ext}_temp_converted.xlsx"
+            )
+
+            # 使用xlrd读取xls文件
+            workbook = xlrd.open_workbook(xls_file_path)
+            sheet = workbook.sheet_by_index(0)
+
+            # 创建新的xlsx文件
+            new_workbook = Workbook()
+            new_sheet = new_workbook.active
+
+            # 复制数据
+            for row_idx in range(sheet.nrows):
+                row_data = sheet.row_values(row_idx)
+                new_sheet.append(row_data)
+
+            # 保存xlsx文件
+            new_workbook.save(xlsx_file_path)
+            self.log(f"已将 '{file_name}' 从xls转换为xlsx格式")
+            return xlsx_file_path
+
+        except Exception as e:
+            self.log(f"转换文件 '{xls_file_path}' 失败: {str(e)}")
+            raise
+
+    def _cleanup_converted_files(self):
+        """清理临时转换的xlsx文件"""
+        try:
+            for file_path in self.converted_files:
+                if "_temp_converted.xlsx" in file_path:
+                    os.remove(file_path)
+                    self.log(f"已清理临时文件: {os.path.basename(file_path)}")
+        except Exception as e:
+            self.log(f"清理临时文件时出错: {str(e)}")
 
     def _get_excel_files_in_native_order(self):
         """获取文件夹中所有Excel文件，保持操作系统原生顺序"""
         self.log(f"正在扫描文件夹: {self.folder_path}")
-        
+
         # 获取所有Excel文件，不进行排序，保持操作系统返回的原生顺序
         self.excel_files = [
-            f for f in os.listdir(self.folder_path) 
+            f for f in os.listdir(self.folder_path)
             if f.endswith(Config.EXCEL_EXTENSIONS) and not f.startswith(Config.TEMP_FILE_PREFIX)
         ]
-        
+
         if not self.excel_files:
             raise FileNotFoundError("未找到任何Excel文件")
-            
+
         self.log(f"找到{len(self.excel_files)}个Excel文件，将按以下原生顺序处理:")
         for i, file in enumerate(self.excel_files, 1):
             self.log(f"  {i}. {file}")
@@ -65,59 +137,58 @@ class ExcelProcessor:
         """在第一个文件的第一列添加店铺列"""
         if not self.ws or self.has_shop_column:
             return
-            
+
         # 在第一列插入新列
         self.ws.insert_cols(1)
-        
+
         # 设置表头
         shop_header_cell = self.ws.cell(row=1, column=1)
         shop_header_cell.value = "店铺"
-        
+
         # 设置表头格式（复制第二列的格式）
         if self.ws.max_column >= 2:
             ref_cell = self.ws.cell(row=1, column=2)
             FormatHandler.copy_cell_format(ref_cell, shop_header_cell)
-        
+
         # 填充第一个文件的数据来源（文件名，不含扩展名）
-        shop_name = os.path.splitext(first_file)[0]
+        shop_name = os.path.splitext(os.path.basename(first_file))[0].replace("_temp_converted", "")
         for row in range(2, row_count + 2):  # 从第二行到数据结束行
             if row > self.ws.max_row:
                 break  # 防止超出表格范围
             cell = self.ws.cell(row=row, column=1)
             cell.value = shop_name
-            
+
             # 复制格式（从同行列的原第一列，现在是第二列）
             if self.ws.max_column >= 2:
                 ref_cell = self.ws.cell(row=row, column=2)
                 FormatHandler.copy_cell_format(ref_cell, cell)
-        
+
         # 更新表头信息，将店铺列包含在内
         self.header_info.insert(0, (1, "店铺", "店铺", False))
         self.header_map["店铺"] = 1
-        
+
         # 调整其他列的索引（+1因为插入了新列）
         for i in range(1, len(self.header_info)):
             col_idx, orig_header, normalized, is_amount_col = self.header_info[i]
             self.header_info[i] = (col_idx + 1, orig_header, normalized, is_amount_col)
             if normalized in self.header_map:
                 self.header_map[normalized] = col_idx + 1
-        
+
         self.has_shop_column = True
         self.log(f"已添加店铺列，用于标识数据来源文件")
 
     def _analyze_first_file(self, first_file):
         """分析第一个文件，获取完整表头信息"""
-        first_file_path = os.path.join(self.folder_path, first_file)
-        self.log(f"以文件 '{first_file}' 为基础获取表头信息")
-        
+        self.log(f"以文件 '{os.path.basename(first_file)}' 为基础获取表头信息")
+
         # 加载第一个文件
         try:
-            self.wb = load_workbook(first_file_path)
+            self.wb = load_workbook(first_file)
         except Exception as e:
-            raise IOError(f"无法加载文件 {first_file}: {str(e)}")
-            
+            raise IOError(f"无法加载文件 {os.path.basename(first_file)}: {str(e)}")
+
         self.ws = self.wb.active
-        
+
         # 分析表头（获取所有列的完整信息）
         col_idx = 1
         self.header_info = []  # 重置表头信息
@@ -126,33 +197,33 @@ class ExcelProcessor:
             original_header = self.ws.cell(row=1, column=col_idx).value
             normalized = Utils.normalize_header(original_header)
             is_amount_col = Utils.is_amount_column(str(original_header)) if original_header else False
-            
+
             self.header_info.append((col_idx, original_header, normalized, is_amount_col))
-            
+
             if normalized and normalized not in self.header_map:
                 self.header_map[normalized] = col_idx
-            
+
             # 检测表头结束或达到最大列数
             if self._is_header_end(col_idx) or col_idx >= Config.MAX_COLUMNS_TO_CHECK:
                 break
-                
+
             col_idx += 1
-        
+
         # 显示检测到的所有表头，确保商品ID、货品ID等关键列被识别
         self.log(f"检测到的表头信息（共 {len(self.header_info)} 列）:")
         for idx, orig, norm, _ in self.header_info:
             self.log(f"  第{idx}列: 原始='{orig}'，标准化='{norm}'")
-        
+
         # 读取第一个文件数据
         try:
-            first_df = pd.read_excel(first_file_path, dtype=str)
+            first_df = pd.read_excel(first_file, dtype=str)
         except Exception as e:
-            raise IOError(f"无法读取文件 {first_file}: {str(e)}")
-            
+            raise IOError(f"无法读取文件 {os.path.basename(first_file)}: {str(e)}")
+
         first_row_count = len(first_df)
         start_row = first_row_count + 2  # 数据开始追加的位置
         format_ref_row = 2 if first_row_count > 0 else 1
-        
+
         return first_row_count, start_row, format_ref_row
 
     def _is_header_end(self, col_idx):
@@ -168,24 +239,24 @@ class ExcelProcessor:
     def _process_all_files_in_native_order(self):
         """按目录原生顺序处理所有文件并合并数据 - 确保数据完整"""
         all_data = []
-        
-        for file_idx, file in enumerate(self.excel_files):
-            file_path = os.path.join(self.folder_path, file)
+
+        for file_idx, file_path in enumerate(self.converted_files):
+            file_name = os.path.basename(file_path)
             try:
                 # 读取文件数据，保留所有列
                 df = pd.read_excel(file_path, dtype=str)
-                self.log(f"\n处理第{file_idx + 1}个文件: {file} (共{len(df)}行数据)")
+                self.log(f"\n处理第{file_idx + 1}个文件: {file_name} (共{len(df)}行数据)")
                 self.log(f"  文件包含列: {', '.join(df.columns.tolist())}")
-                
-                # 提取店铺名（文件名不含扩展名）
-                shop_name = os.path.splitext(file)[0]
-                
+
+                # 提取店铺名（文件名不含扩展名和临时标识）
+                shop_name = os.path.splitext(file_name)[0].replace("_temp_converted", "")
+
                 # 在第一列插入店铺列
                 df.insert(0, '店铺', shop_name)
-                
+
                 # 创建对齐后的DataFrame，确保包含所有表头列
                 aligned_df = pd.DataFrame(columns=[h[2] for h in self.header_info])
-                
+
                 # 逐列映射，确保不丢失任何数据
                 for norm_header in aligned_df.columns:
                     # 尝试找到最匹配的列
@@ -195,17 +266,17 @@ class ExcelProcessor:
                             aligned_df[norm_header] = df[df_col]
                             matched = True
                             break
-                    
+
                     # 如果未找到匹配列，保持为空但保留列
                     if not matched and norm_header != '店铺':
                         self.log(f"  警告: 文件中未找到与 '{norm_header}' 匹配的列，将保留空值")
                         aligned_df[norm_header] = ""
-                
+
                 all_data.append(aligned_df)
                 self.log(f"  处理完成，已映射所有列")
-                
+
             except Exception as e:
-                self.log(f"警告: 处理文件{file}时出错，已跳过 - {str(e)}")
+                self.log(f"警告: 处理文件{file_name}时出错，已跳过 - {str(e)}")
         
         if not all_data:
             raise ValueError("没有可处理的有效文件")
