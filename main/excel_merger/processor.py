@@ -1,4 +1,4 @@
-"""Excel处理核心逻辑 - 按目录原生顺序合并文件，支持xls自动转换为xlsx"""
+"""Excel处理核心逻辑 - 按目录原生顺序合并文件，支持xls自动转换为xlsx、CSV文件合并"""
 import os
 import xlrd
 import pandas as pd
@@ -9,7 +9,7 @@ from .utils import Utils
 from .format_handler import FormatHandler
 
 class ExcelProcessor:
-    """Excel文件处理核心类 - 按目录原生顺序合并文件，支持xls自动转换"""
+    """Excel/CSV文件处理核心类 - 按目录原生顺序合并文件，支持xls自动转换、CSV适配"""
     def __init__(self, folder_path, output_path, log_callback):
         self.folder_path = folder_path
         self.output_path = output_path
@@ -27,7 +27,7 @@ class ExcelProcessor:
 
     def merge(self):
         """执行合并操作 - 转换xls文件 -> 按目录原生顺序合并文件"""
-        # 获取Excel文件（按目录原生顺序）
+        # 获取Excel/CSV文件（按目录原生顺序）
         self._get_excel_files_in_native_order()
 
         # 转换所有xls文件为xlsx
@@ -55,12 +55,17 @@ class ExcelProcessor:
         return result
 
     def _convert_all_xls_to_xlsx(self):
-        """将所有xls文件转换为xlsx格式"""
+        """将所有xls文件转换为xlsx格式，CSV文件直接跳过"""
         self.log("开始检查并转换xls文件...")
         self.converted_files = []
 
         for file in self.excel_files:
             file_path = os.path.join(self.folder_path, file)
+
+            # 如果是CSV文件，直接加入列表，跳过转换
+            if Utils.is_csv_file(file_path):
+                self.converted_files.append(file_path)
+                continue
 
             if file.endswith('.xls') and not file.endswith('.xlsx'):
                 # 需要转换的xls文件
@@ -107,9 +112,12 @@ class ExcelProcessor:
             raise
 
     def _cleanup_converted_files(self):
-        """清理临时转换的xlsx文件"""
+        """清理临时转换的xlsx文件，跳过CSV文件"""
         try:
             for file_path in self.converted_files:
+                # 仅删除临时转换的xlsx，跳过CSV文件
+                if Utils.is_csv_file(file_path):
+                    continue
                 if "_temp_converted.xlsx" in file_path:
                     os.remove(file_path)
                     self.log(f"已清理临时文件: {os.path.basename(file_path)}")
@@ -117,19 +125,20 @@ class ExcelProcessor:
             self.log(f"清理临时文件时出错: {str(e)}")
 
     def _get_excel_files_in_native_order(self):
-        """获取文件夹中所有Excel文件，保持操作系统原生顺序"""
+        """获取文件夹中所有Excel/CSV文件，保持操作系统原生顺序"""
         self.log(f"正在扫描文件夹: {self.folder_path}")
 
-        # 获取所有Excel文件，不进行排序，保持操作系统返回的原生顺序
+        # 获取所有Excel/CSV文件，不进行排序，保持操作系统返回的原生顺序
         self.excel_files = [
             f for f in os.listdir(self.folder_path)
-            if f.endswith(Config.EXCEL_EXTENSIONS) and not f.startswith(Config.TEMP_FILE_PREFIX)
+            if (f.endswith(Config.EXCEL_EXTENSIONS) or Utils.is_csv_file(f))
+            and not f.startswith(Config.TEMP_FILE_PREFIX)
         ]
 
         if not self.excel_files:
-            raise FileNotFoundError("未找到任何Excel文件")
+            raise FileNotFoundError("未找到任何Excel/CSV文件")
 
-        self.log(f"找到{len(self.excel_files)}个Excel文件，将按以下原生顺序处理:")
+        self.log(f"找到{len(self.excel_files)}个Excel/CSV文件，将按以下原生顺序处理:")
         for i, file in enumerate(self.excel_files, 1):
             self.log(f"  {i}. {file}")
 
@@ -178,14 +187,32 @@ class ExcelProcessor:
         self.log(f"已添加店铺列，用于标识数据来源文件")
 
     def _analyze_first_file(self, first_file):
-        """分析第一个文件，获取完整表头信息"""
+        """分析第一个文件（Excel/CSV），获取完整表头信息"""
         self.log(f"以文件 '{os.path.basename(first_file)}' 为基础获取表头信息")
 
-        # 加载第一个文件
-        try:
-            self.wb = load_workbook(first_file)
-        except Exception as e:
-            raise IOError(f"无法加载文件 {os.path.basename(first_file)}: {str(e)}")
+        # 处理CSV格式的第一个文件
+        if Utils.is_csv_file(first_file):
+            df = Utils.read_csv_file(first_file)
+            if df is None or df.empty:
+                raise IOError(f"第一个文件{os.path.basename(first_file)}是CSV格式但读取失败/无数据")
+
+            # 临时创建xlsx文件用于后续格式处理
+            temp_xlsx = os.path.join(self.folder_path, "_temp_first_file.xlsx")
+            df.to_excel(temp_xlsx, index=False)
+            try:
+                self.wb = load_workbook(temp_xlsx)
+            except Exception as e:
+                raise IOError(f"加载CSV转换的临时文件失败: {str(e)}")
+            finally:
+                # 清理临时文件
+                if os.path.exists(temp_xlsx):
+                    os.remove(temp_xlsx)
+        else:
+            # 原有Excel文件处理逻辑
+            try:
+                self.wb = load_workbook(first_file)
+            except Exception as e:
+                raise IOError(f"无法加载文件 {os.path.basename(first_file)}: {str(e)}")
 
         self.ws = self.wb.active
 
@@ -216,7 +243,10 @@ class ExcelProcessor:
 
         # 读取第一个文件数据
         try:
-            first_df = pd.read_excel(first_file, dtype=str)
+            if Utils.is_csv_file(first_file):
+                first_df = Utils.read_csv_file(first_file)
+            else:
+                first_df = pd.read_excel(first_file, dtype=str)
         except Exception as e:
             raise IOError(f"无法读取文件 {os.path.basename(first_file)}: {str(e)}")
 
@@ -236,23 +266,46 @@ class ExcelProcessor:
                 empty_count += 1
         return empty_count >= Config.EMPTY_COLUMN_THRESHOLD
 
+    def _read_csv_file_for_merge(self, file_path):
+        """读取CSV文件并适配合并逻辑（对齐Excel读取的返回格式）"""
+        try:
+            self.log(f"读取CSV文件: {os.path.basename(file_path)}")
+            df = Utils.read_csv_file(file_path)
+            if df is None or df.empty:
+                self.log(f"CSV文件{os.path.basename(file_path)}无有效数据，跳过")
+                return None
+            # 为CSV数据添加店铺列（对齐Excel的店铺列逻辑）
+            shop_name = os.path.splitext(os.path.basename(file_path))[0].replace("_temp_converted", "")
+            df.insert(0, "店铺", shop_name)
+            return df
+        except Exception as e:
+            self.log(f"读取CSV文件{os.path.basename(file_path)}失败: {str(e)}")
+            return None
+
     def _process_all_files_in_native_order(self):
-        """按目录原生顺序处理所有文件并合并数据 - 确保数据完整"""
+        """按目录原生顺序处理所有文件（Excel/CSV）并合并数据 - 确保数据完整"""
         all_data = []
 
         for file_idx, file_path in enumerate(self.converted_files):
             file_name = os.path.basename(file_path)
             try:
-                # 读取文件数据，保留所有列
-                df = pd.read_excel(file_path, dtype=str)
-                self.log(f"\n处理第{file_idx + 1}个文件: {file_name} (共{len(df)}行数据)")
-                self.log(f"  文件包含列: {', '.join(df.columns.tolist())}")
+                # 处理CSV文件
+                if Utils.is_csv_file(file_path):
+                    df = self._read_csv_file_for_merge(file_path)
+                    if df is None or df.empty:
+                        continue
+                # 处理Excel文件
+                else:
+                    # 读取文件数据，保留所有列
+                    df = pd.read_excel(file_path, dtype=str)
+                    self.log(f"\n处理第{file_idx + 1}个文件: {file_name} (共{len(df)}行数据)")
+                    self.log(f"  文件包含列: {', '.join(df.columns.tolist())}")
 
-                # 提取店铺名（文件名不含扩展名和临时标识）
-                shop_name = os.path.splitext(file_name)[0].replace("_temp_converted", "")
+                    # 提取店铺名（文件名不含扩展名和临时标识）
+                    shop_name = os.path.splitext(file_name)[0].replace("_temp_converted", "")
 
-                # 在第一列插入店铺列
-                df.insert(0, '店铺', shop_name)
+                    # 在第一列插入店铺列
+                    df.insert(0, '店铺', shop_name)
 
                 # 创建对齐后的DataFrame，确保包含所有表头列
                 aligned_df = pd.DataFrame(columns=[h[2] for h in self.header_info])
@@ -269,7 +322,7 @@ class ExcelProcessor:
 
                     # 如果未找到匹配列，保持为空但保留列
                     if not matched and norm_header != '店铺':
-                        self.log(f"  警告: 文件中未找到与 '{norm_header}' 匹配的列，将保留空值")
+                        self.log(f"  警告: 文件{file_name}中未找到与 '{norm_header}' 匹配的列，将保留空值")
                         aligned_df[norm_header] = ""
 
                 all_data.append(aligned_df)
@@ -277,10 +330,10 @@ class ExcelProcessor:
 
             except Exception as e:
                 self.log(f"警告: 处理文件{file_name}时出错，已跳过 - {str(e)}")
-        
+
         if not all_data:
             raise ValueError("没有可处理的有效文件")
-        
+
         # 合并所有数据（严格保持文件的原生顺序）
         merged_df = pd.concat(all_data, ignore_index=True)
         self.log(f"\n数据合并完成，共 {len(merged_df)} 行数据，{len(merged_df.columns)} 列")
@@ -295,26 +348,26 @@ class ExcelProcessor:
                 self.log("已清除基础文件后的原有数据")
             except Exception as e:
                 self.log(f"警告: 清除旧数据时出错 - {str(e)}")
-        
+
         # 写入数据（从第一个文件之后开始）
         total_rows = len(merged_df)
         batch_size = Config.WRITE_BATCH_SIZE
-        
+
         for batch_start in range(first_row_count, total_rows, batch_size):
             batch_end = min(batch_start + batch_size, total_rows)
             self.log(f"正在写入数据: {batch_end}/{total_rows} 行")
-            
+
             for row_idx in range(batch_start, batch_end):
                 data_row = merged_df.iloc[row_idx]
                 current_row = start_row + (row_idx - first_row_count)
-                
+
                 for col_info in self.header_info:
                     self._write_cell(data_row, col_info, current_row, format_ref_row)
 
     def _write_cell(self, data_row, col_info, current_row, format_ref_row):
         """写入单个单元格数据 - 确保所有值正确保留"""
         col_idx, orig_header, norm_header, is_amount_col = col_info
-        
+
         # 获取单元格值（确保不丢失数据）
         try:
             value = data_row[norm_header] if norm_header in data_row else ""
@@ -322,11 +375,11 @@ class ExcelProcessor:
                 value = ""
         except:
             value = ""
-        
+
         # 获取参考单元格和目标单元格
         ref_cell = self.ws.cell(row=format_ref_row, column=col_idx)
         target_cell = self.ws.cell(row=current_row, column=col_idx)
-        
+
         # 处理金额列
         if is_amount_col:
             value = self._process_amount_value(value, target_cell, ref_cell)
@@ -336,7 +389,7 @@ class ExcelProcessor:
             value = str(value)
         else:
             target_cell.number_format = ref_cell.number_format
-        
+
         target_cell.value = value
         FormatHandler.copy_cell_format(ref_cell, target_cell, force_right=is_amount_col)
 
@@ -357,10 +410,10 @@ class ExcelProcessor:
         """保存合并结果"""
         # 确保输出目录存在
         Utils.ensure_dir_exists(self.output_path)
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(self.output_path, f"汇总结果_{timestamp}.xlsx")
-        
+
         try:
             self.wb.save(output_file)
             return output_file

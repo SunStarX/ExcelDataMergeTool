@@ -201,11 +201,38 @@ class FinancialDataMergerGUI:
         try:
             processor = ExcelProcessor(folder_path, output_path, self._log)
             result_file = processor.merge()
-            
+
             if result_file:
                 self._log(f"汇总成功！结果已保存至:\n{result_file}")
                 if messagebox.askyesno("成功", "汇总成功！是否打开结果文件所在文件夹？"):
-                    os.startfile(os.path.dirname(result_file))
+                    try:
+                        # 获取文件夹路径
+                        folder_path = os.path.dirname(result_file)
+
+                        # 验证路径是否存在
+                        if not os.path.exists(folder_path):
+                            messagebox.showerror("错误", f"文件夹不存在: {folder_path}")
+                        else:
+                            # 跨平台打开文件夹的兼容方案
+                            import sys
+                            if sys.platform.startswith('win32'):
+                                # Windows系统
+                                os.startfile(folder_path)
+                            elif sys.platform.startswith('darwin'):
+                                # macOS系统
+                                os.system(f'open "{folder_path}"')
+                            else:
+                                # Linux系统
+                                os.system(f'xdg-open "{folder_path}"')
+                    except Exception as e:
+                        # 当os.startfile失败时，尝试用explorer命令作为备选方案
+                        try:
+                            os.system(f'explorer "{folder_path}"')
+                        except Exception as e2:
+                            messagebox.showerror(
+                                "错误",
+                                f"无法打开文件夹:\n{str(e)}\n\n备选方案也失败:\n{str(e2)}"
+                            )
         except Exception as e:
             self._log(f"汇总失败: {str(e)}")
             messagebox.showerror("错误", f"汇总失败: {str(e)}")
