@@ -17,9 +17,9 @@ class FinancialDataMergerGUI:
         # 软件信息
         self.app_info = {
             "name": "财务数据汇总工具",
-            "version": "1.1.0",
+            "version": "1.1.1",
             "author": "sunstar",
-            "date": "2025年8月10日"
+            "date": "2026年1月14日"
         }
         
         # 设置中文字体支持
