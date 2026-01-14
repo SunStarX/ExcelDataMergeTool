@@ -1,5 +1,6 @@
-"""Excel处理核心逻辑 - 首文件保留两行表头，后续文件保留数据剔除表头，默认header_rows=2"""
+"""Excel处理核心逻辑 - 动态识别表头行数，首文件保留表头，后续文件剔除表头"""
 import os
+import re
 import xlrd
 import pandas as pd
 from datetime import datetime
@@ -9,32 +10,38 @@ from .utils import Utils
 from .format_handler import FormatHandler
 
 class ExcelProcessor:
-    """Excel/CSV文件处理核心类 - 精准保留首文件表头，后续文件数据不丢"""
-    def __init__(self, folder_path, output_path, log_callback, header_rows=1):
+    """Excel/CSV文件处理核心类 - 动态识别表头行数（无时间=表头，有时间=数据开始）"""
+    def __init__(self, folder_path, output_path, log_callback):
         self.folder_path = folder_path
         self.output_path = output_path
-        self.log = log_callback
+        self.log = log_callback  # 日志回调函数
         self.excel_files = []
-        self.converted_files = []
-        self.header_info = []
+        self.converted_files = []  # 存储转换后的文件路径
+        self.header_info = []  # (列索引, 原始表头, 标准化表头, 是否金额列)
         self.header_map = {}
         self.wb = None
         self.ws = None
-        self.has_shop_column = False
-        self.header_rows = header_rows
-        self.header_end_row = self.header_rows
+        self.has_shop_column = False  # 是否已添加店铺列
+        self.header_rows = None  # 动态识别，初始化为None
+        self.header_end_row = None  # 表头结束行号（动态赋值）
         self.base_first_column_orig = ""
         self.base_first_column_norm = ""
         self.clean_base_header = []
-        # 降低表头判定阈值，减少误删
-        self.keyword_match_threshold = 0.9
+        self.keyword_match_threshold = 0.9  # 表头判定阈值
 
+        # 初始化时过滤警告
         Utils.filter_warnings()
 
     def merge(self):
+        """执行合并操作 - 先动态识别表头，再处理文件"""
         self._get_excel_files_in_native_order()
         self._convert_all_xls_to_xlsx()
         first_file = self.converted_files[0]
+
+        # 核心步骤1：动态识别第一个文件的表头行数
+        self._detect_header_rows_auto(first_file)
+        self.log(f"动态识别完成，表头行数(header_rows)={self.header_rows}")
+
         first_row_count, start_row, format_ref_row = self._analyze_first_file(first_file)
         self._add_shop_column_to_first_file(first_file, first_row_count)
         merged_df = self._process_all_files_in_native_order()
@@ -43,7 +50,95 @@ class ExcelProcessor:
         self._cleanup_converted_files()
         return result
 
+    def _detect_header_rows_auto(self, first_file):
+        """
+        核心方法：动态识别表头行数
+        逻辑：从第1行开始扫描，无时间数据=表头，有时间数据=数据开始，确定header_rows
+        """
+        self.log(f"开始动态扫描第一个文件 '{os.path.basename(first_file)}'，识别表头行数...")
+        row_is_data = False
+        header_candidate = 0  # 表头行数候选值
+
+        try:
+            # 读取第一个文件的所有行（无表头模式）
+            if Utils.is_csv_file(first_file):
+                df_all = pd.read_csv(first_file, header=None, dtype=str, keep_default_na=False)
+            else:
+                # 先转换xls（如果需要），再读取
+                if first_file.endswith('.xls') and not first_file.endswith('.xlsx'):
+                    first_file = self._convert_xls_to_xlsx(first_file)
+                df_all = pd.read_excel(first_file, header=None, dtype=str, keep_default_na=False)
+
+            if df_all.empty:
+                raise IOError("第一个文件无任何数据，无法动态识别表头")
+
+            # 逐行扫描（从第1行开始，对应索引0）
+            for row_idx, (_, row) in enumerate(df_all.iterrows()):
+                row_data = row.values
+                row_str = " ".join([str(val).strip() for val in row_data if str(val).strip() != ""])
+
+                # 核心判断：该行是否包含有效时间/日期数据
+                if self._has_valid_time_data(row_str):
+                    row_is_data = True
+                    header_candidate = row_idx  # 数据行的前所有行都是表头（行号=索引）
+                    self.log(f"  第{row_idx+1}行检测到有效时间数据，判定为数据开始行")
+                    break
+                else:
+                    self.log(f"  第{row_idx+1}行无时间数据，判定为表头行")
+
+            # 确定最终header_rows
+            if row_is_data:
+                self.header_rows = header_candidate  # 数据行索引=表头行数（前header_candidate行是表头）
+            else:
+                # 边界兜底：无任何时间数据，默认设为2行表头（兼容原有场景）
+                self.log("  警告：文件中未检测到任何时间数据，默认表头行数=2")
+                self.header_rows = 2
+
+            # 同步更新表头结束行号
+            self.header_end_row = self.header_rows
+
+        except Exception as e:
+            self.log(f"动态识别表头行数失败：{str(e)}，默认表头行数=2")
+            self.header_rows = 2
+            self.header_end_row = 2
+
+    def _has_valid_time_data(self, content):
+        """
+        辅助方法：判断字符串是否包含有效时间/日期数据
+        兼容格式：yyyy-mm-dd、yyyy/mm/dd、yyyy.mm.dd、hh:mm:ss、yyyy年mm月dd日
+        """
+        if not content or len(content) < 6:
+            return False
+
+        # 正则匹配常见时间/日期格式（优先级从高到低）
+        time_patterns = [
+            r'\d{4}[-/\.]\d{1,2}[-/\.]\d{1,2}',  # yyyy-mm-dd / yyyy/mm/dd / yyyy.mm.dd
+            r'\d{1,2}[-/\.]\d{1,2}[-/\.]\d{4}',  # dd-mm-yyyy / mm/dd/yyyy
+            r'\d{2}:\d{2}:\d{2}',  # hh:mm:ss
+            r'\d{4}年\d{1,2}月\d{1,2}日'  # 中文日期：yyyy年mm月dd日
+        ]
+
+        for pattern in time_patterns:
+            if re.search(pattern, content):
+                return True
+
+        # 额外判断：是否包含datetime可转换的字符串（兜底）
+        try:
+            # 尝试转换常见格式，避免正则漏判
+            datetime.strptime(content, "%Y-%m-%d")
+            return True
+        except:
+            pass
+        try:
+            datetime.strptime(content, "%Y/%m/%d")
+            return True
+        except:
+            pass
+
+        return False
+
     def _convert_all_xls_to_xlsx(self):
+        """将所有xls文件转换为xlsx格式，CSV文件直接跳过"""
         self.log("开始检查并转换xls文件...")
         self.converted_files = []
         for file in self.excel_files:
@@ -59,6 +154,7 @@ class ExcelProcessor:
         self.log(f"格式转换完成，共处理{len(self.converted_files)}个文件")
 
     def _convert_xls_to_xlsx(self, xls_file_path):
+        """将单个xls文件转换为xlsx格式"""
         try:
             file_name = os.path.basename(xls_file_path)
             file_name_without_ext = os.path.splitext(file_name)[0]
@@ -78,6 +174,7 @@ class ExcelProcessor:
             raise
 
     def _cleanup_converted_files(self):
+        """清理临时转换的xlsx文件，跳过CSV文件"""
         try:
             for file_path in self.converted_files:
                 if Utils.is_csv_file(file_path):
@@ -89,6 +186,7 @@ class ExcelProcessor:
             self.log(f"清理临时文件时出错: {str(e)}")
 
     def _get_excel_files_in_native_order(self):
+        """获取文件夹中所有Excel/CSV文件，保持操作系统原生顺序"""
         self.log(f"正在扫描文件夹: {self.folder_path}")
         self.excel_files = [
             f for f in os.listdir(self.folder_path)
@@ -102,10 +200,11 @@ class ExcelProcessor:
             self.log(f"  {i}. {file}")
 
     def _add_shop_column_to_first_file(self, first_file, row_count):
-        if not self.ws or self.has_shop_column:
+        """为动态识别的表头行数添加店铺列，保留所有表头行"""
+        if not self.ws or self.has_shop_column or self.header_rows is None:
             return
         self.ws.insert_cols(1)
-        # 给两行表头都添加店铺列名
+        # 给所有表头行都填充"店铺"列名（动态适配header_rows）
         for header_row in range(1, self.header_rows + 1):
             shop_header_cell = self.ws.cell(row=header_row, column=1)
             shop_header_cell.value = "店铺"
@@ -114,8 +213,9 @@ class ExcelProcessor:
                 FormatHandler.copy_cell_format(ref_cell, shop_header_cell)
         self.log(f"已为第一个文件的{self.header_rows}行表头添加店铺列")
 
+        # 填充第一个文件的数据行店铺值
         shop_name = os.path.splitext(os.path.basename(first_file))[0].replace("_temp_converted", "")
-        data_start_row = self.header_end_row + 1
+        data_start_row = self.header_end_row + 1  # 数据从表头结束行+1开始
         for row in range(data_start_row, data_start_row + row_count):
             if row > self.ws.max_row:
                 break
@@ -134,14 +234,20 @@ class ExcelProcessor:
         self.has_shop_column = True
 
     def _analyze_first_file(self, first_file):
-        self.log(f"以第一个文件 '{os.path.basename(first_file)}' 为基础获取两行表头（header_rows={self.header_rows}）")
+        """基于动态识别的header_rows，分析第一个文件"""
+        if self.header_rows is None:
+            raise ValueError("表头行数未动态识别，无法分析文件")
+
+        self.log(f"以第一个文件 '{os.path.basename(first_file)}' 为基础，分析{self.header_rows}行表头")
 
         if Utils.is_csv_file(first_file):
-            df_all = pd.read_csv(first_file, header=None, dtype=str)
+            df_all = pd.read_csv(first_file, header=None, dtype=str, keep_default_na=False)
             if df_all.empty:
                 raise IOError(f"第一个文件{os.path.basename(first_file)}是CSV格式但无数据")
+            # 提取最后一行表头作为有效表头（索引=header_rows-1）
             header_row_idx = self.header_rows - 1
             effective_header = df_all.iloc[header_row_idx].tolist()
+            # 保留所有表头行，数据从header_rows开始
             df_header = df_all.iloc[:self.header_rows].reset_index(drop=True)
             df_data = df_all.iloc[self.header_rows:].reset_index(drop=True)
             df_data.columns = effective_header
@@ -190,12 +296,14 @@ class ExcelProcessor:
                     break
                 col_idx += 1
 
+        # 生成基准表头关键词（用于后续文件过滤）
         self.clean_base_header = [
             str(h[1]).strip().lower() for h in self.header_info
             if h[1] is not None and str(h[1]).strip() != ""
         ]
-        self.log(f"已生成基准表头关键词(第一个文件第2行表头): {self.clean_base_header[:5]}...")
+        self.log(f"已生成基准表头关键词(第一个文件第{self.header_end_row}行表头): {self.clean_base_header[:5]}...")
 
+        # 记录基准非店铺第一列
         if len(self.header_info) > 0:
             self.base_first_column_orig = self.header_info[0][1]
             self.base_first_column_norm = self.header_info[0][2]
@@ -222,6 +330,7 @@ class ExcelProcessor:
         return first_row_count, start_row, format_ref_row
 
     def _is_header_end(self, col_idx):
+        """判断表头是否结束（列维度）"""
         empty_count = 0
         for i in range(1, Config.EMPTY_COLUMN_THRESHOLD + 1):
             if col_idx + i > Config.MAX_COLUMNS_TO_CHECK:
@@ -249,11 +358,11 @@ class ExcelProcessor:
         return match_ratio >= self.keyword_match_threshold and is_plain_text
 
     def _filter_header_rows(self, df, file_name, file_index):
-        """核心修复：后续文件只删明确的表头行，绝不删光数据"""
+        """后续文件过滤表头行，保留数据不丢失"""
         if df.empty:
             return df
 
-        # 第一个文件直接返回
+        # 第一个文件直接返回，不做任何过滤
         if file_index == 0:
             self.log(f"  第一个文件 {file_name} 保留所有数据行")
             return df
@@ -265,8 +374,8 @@ class ExcelProcessor:
         header_mask = [True] * original_len
         header_row_count = 0
 
-        # 只剔除明显的表头行（首行大概率是残留表头）
-        for idx in range(min(2, original_len)):  # 只检查前2行，避免删光数据
+        # 只剔除前2行中明显的表头行，避免删光数据
+        for idx in range(min(2, original_len)):
             row = df.iloc[idx]
             if self._is_header_row(row.values):
                 header_mask[idx] = False
@@ -276,7 +385,7 @@ class ExcelProcessor:
         filtered_df = df[header_mask].reset_index(drop=True)
         filtered_len = len(filtered_df)
 
-        # 兜底：如果过滤后数据为空，恢复原始数据
+        # 兜底：过滤后无数据则恢复原始数据
         if filtered_len == 0:
             self.log(f"  警告：{file_name}过滤后无数据，恢复原始{original_len}行数据")
             return df
@@ -285,12 +394,13 @@ class ExcelProcessor:
         return filtered_df
 
     def _read_csv_file_for_merge(self, file_path, file_index):
-        """修复：放宽行数判断，确保后续文件数据不丢"""
+        """读取CSV文件，基于动态header_rows跳过表头"""
         try:
             file_name = os.path.basename(file_path)
             self.log(f"读取CSV文件: {file_name} (跳过前{self.header_rows}行表头)")
-            df_all = pd.read_csv(file_path, header=None, dtype=str)
+            df_all = pd.read_csv(file_path, header=None, dtype=str, keep_default_na=False)
             total_rows = len(df_all)
+
             # 放宽判断：只要总行数 > header_rows 就认为有数据
             if total_rows <= self.header_rows:
                 self.log(f"  警告：{file_name}总行数{total_rows}≤表头行数{self.header_rows}，尝试读取所有行")
@@ -315,9 +425,9 @@ class ExcelProcessor:
             else:
                 df_data.insert(0, "店铺", shop_name)
 
-            # 打印后续文件数据预览，验证数据是否存在
+            # 打印后续文件数据预览
             if file_index > 0 and len(df_data) > 0:
-                self.log(f"  {file_name} 数据预览(前2行): {df_data.head(2).values.tolist()}")
+                self.log(f"  {file_name} 数据预览(前2行): {df_data.head(2).values.tolist()[:2]}")
 
             return df_data
         except Exception as e:
@@ -325,7 +435,7 @@ class ExcelProcessor:
             return None
 
     def _process_all_files_in_native_order(self):
-        """修复列映射：兼容列名不匹配，确保数据能填充"""
+        """按顺序处理所有文件，兼容动态header_rows"""
         all_data = []
         base_orig_to_norm = {h[1]: h[2] for h in self.header_info if h[1] is not None}
         base_columns = [h[2] for h in self.header_info]
@@ -352,17 +462,15 @@ class ExcelProcessor:
                     else:
                         df.insert(0, '店铺', shop_name)
 
-                # 核心修复：列映射兼容，允许部分列匹配
+                # 列映射兼容，确保数据不丢失
                 df_norm_cols = [Utils.normalize_header(col) for col in df.columns]
                 aligned_df = pd.DataFrame(columns=base_columns)
-                # 先填充店铺列
                 aligned_df["店铺"] = df["店铺"].values
 
-                # 填充其他列：优先按标准化列名匹配，不匹配则填充空值
+                # 填充其他列：优先匹配，不匹配则填空值
                 for base_col in base_columns:
                     if base_col == "店铺":
                         continue
-                    # 找当前文件中匹配的列
                     match_col_idx = next((i for i, col in enumerate(df_norm_cols) if col == base_col), None)
                     if match_col_idx is not None:
                         aligned_df[base_col] = df.iloc[:, match_col_idx].values
@@ -384,6 +492,7 @@ class ExcelProcessor:
         return merged_df
 
     def _write_merged_data(self, merged_df, first_row_count, start_row, format_ref_row):
+        """写入合并数据，保留第一个文件的动态表头"""
         if self.ws.max_row >= start_row:
             try:
                 self.ws.delete_rows(start_row, self.ws.max_row - start_row + 1)
@@ -402,6 +511,7 @@ class ExcelProcessor:
                     self._write_cell(data_row, col_info, current_row, format_ref_row)
 
     def _write_cell(self, data_row, col_info, current_row, format_ref_row):
+        """写入单个单元格数据"""
         col_idx, orig_header, norm_header, is_amount_col = col_info
         try:
             value = data_row[norm_header] if norm_header in data_row else ""
@@ -422,6 +532,7 @@ class ExcelProcessor:
         FormatHandler.copy_cell_format(ref_cell, target_cell, force_right=is_amount_col)
 
     def _process_amount_value(self, value, target_cell, ref_cell):
+        """处理金额列的值"""
         try:
             clean_value = str(value).replace(',', '').replace('￥', '').replace('$', '')
             value = float(clean_value)
@@ -432,6 +543,7 @@ class ExcelProcessor:
             return value
 
     def _save_result(self):
+        """保存合并结果，保留动态识别的表头"""
         Utils.ensure_dir_exists(self.output_path)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = os.path.join(self.output_path, f"汇总结果_{timestamp}.xlsx")
